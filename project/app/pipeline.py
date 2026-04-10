@@ -19,6 +19,7 @@ from app.analytics.aggression_analyzer import AggressionAnalyzer
 from app.risk.fight_risk_engine import FightRiskEngine, FightRiskResult
 from app.risk.monitoring_risk_engine import MonitoringRiskEngine, MonitoringRiskResult
 from app.alerts.clip_recorder import ClipRecorder, ClipRecorderConfig
+from app.alerts.snapshot_saver import SnapshotSaver, SnapshotSaverConfig
 from app.utils.video_io import VideoSource
 from app.utils.logger import JsonEventLogger, now_iso
 from app.utils.drawing import color_for_id, draw_bbox, draw_side_panel, draw_skeleton, level_color
@@ -104,6 +105,19 @@ class Pipeline:
             )
         )
 
+        self.snapshot: Optional[SnapshotSaver] = None
+        if self.cfg.snapshot.enabled:
+            self.snapshot = SnapshotSaver(
+                SnapshotSaverConfig(
+                    snapshots_dir=self.cfg.snapshot.snapshots_dir,
+                    cooldown_seconds=self.cfg.snapshot.cooldown_seconds,
+                    jpeg_quality=self.cfg.snapshot.jpeg_quality,
+                    show_preview_window=self.cfg.snapshot.show_preview_window,
+                    preview_max_width=self.cfg.snapshot.preview_max_width,
+                    preview_window_name=self.cfg.snapshot.preview_window_name,
+                )
+            )
+
         self._prev_gray: Optional[np.ndarray] = None
         self._prev_centers_sorted: List[Tuple[float, float]] = []
         self._prev_kpts_by_id: Dict[int, Tuple[np.ndarray, np.ndarray]] = {}
@@ -118,6 +132,34 @@ class Pipeline:
         self._zoom: float = 1.0
         self._pan_x: int = 0
         self._pan_y: int = 0
+
+    def _reset_temporal_state_after_seek(self) -> None:
+        self._prev_gray = None
+        self._prev_centers_sorted = []
+        self._prev_kpts_by_id = {}
+
+    def _file_eof_overlay_loop(self, last_frame: np.ndarray, cap: cv2.VideoCapture) -> bool:
+        """
+        After file EOF when not looping: show last frame until r (restart) or q/ESC (quit).
+        Returns True if should quit main loop.
+        """
+        h, w = last_frame.shape[:2]
+        msg = "END | r=restart | q=quit"
+        while True:
+            vis = last_frame.copy()
+            cv2.rectangle(vis, (0, 0), (w, 36), (20, 20, 20), -1)
+            cv2.putText(vis, msg, (10, 24), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (240, 240, 240), 1, cv2.LINE_AA)
+            cv2.imshow(self.cfg.window_name, vis)
+            key = cv2.waitKey(50) & 0xFF
+            if key in (27, ord("q")):
+                return True
+            if key == ord("r"):
+                try:
+                    cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
+                except Exception:
+                    pass
+                self._reset_temporal_state_after_seek()
+                return False
 
     def _scene_motion_score(self, frame_bgr: np.ndarray) -> float:
         g = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2GRAY)
@@ -192,10 +234,7 @@ class Pipeline:
                 cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
             except Exception:
                 pass
-            # reset temporal state
-            self._prev_gray = None
-            self._prev_centers_sorted = []
-            self._prev_kpts_by_id = {}
+            self._reset_temporal_state_after_seek()
             return False
         if key in (ord("+"), ord("=")):
             self._zoom = min(4.0, self._zoom * 1.15)
@@ -229,6 +268,8 @@ class Pipeline:
     def run(self) -> None:
         os.makedirs(self.cfg.logs_dir, exist_ok=True)
         os.makedirs(self.cfg.clips_dir, exist_ok=True)
+        if self.cfg.snapshot.enabled:
+            os.makedirs(self.cfg.snapshot.snapshots_dir, exist_ok=True)
 
         vs = VideoSource({**self.cfg.VIDEO_SOURCE, "fps_fallback": self.cfg.clip.fps_fallback})
         vs.open()
@@ -243,12 +284,29 @@ class Pipeline:
 
             frame_idx = 0
             last_frame: Optional[np.ndarray] = None
+            source_type = (self.cfg.VIDEO_SOURCE.get("type") or "").lower().strip()
 
             while True:
+                snapshot_native: Optional[np.ndarray] = None
                 if not self._paused or last_frame is None:
                     ok, frame = cap.read()
                     if not ok or frame is None:
+                        if source_type == "file" and self.cfg.loop_file_on_end:
+                            try:
+                                cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
+                            except Exception:
+                                pass
+                            self._reset_temporal_state_after_seek()
+                            continue
+                        if (
+                            source_type == "file"
+                            and last_frame is not None
+                            and self.cfg.viz.show
+                            and not self._file_eof_overlay_loop(last_frame, cap)
+                        ):
+                            continue
                         break
+                    snapshot_native = frame.copy()
                     last_frame = frame
                     frame_idx += 1
                 else:
@@ -366,6 +424,21 @@ class Pipeline:
 
                 clip_path = self.clip.pop_last_clip_path()
 
+                snapshot_path: Optional[str] = None
+                if (
+                    self.snapshot is not None
+                    and (not self._paused)
+                    and level in ("UYARI", "ALARM")
+                    and snapshot_native is not None
+                ):
+                    snapshot_path = self.snapshot.maybe_save(
+                        snapshot_native,
+                        level=level,
+                        risk_score=float(risk_score),
+                        main_reason=str(main_reason),
+                        frame_idx=frame_idx,
+                    )
+
                 # logging on UYARI/ALARM (MVP)
                 if (not self._paused) and level in ("UYARI", "ALARM"):
                     event = {
@@ -377,6 +450,7 @@ class Pipeline:
                         "active_interactions": int(inter.active_interactions),
                         "main_reason": str(main_reason),
                         "clip_path": clip_path,
+                        "snapshot_path": snapshot_path,
                         "components": {k: float(v) for k, v in components.items()},
                     }
                     self.logger.log_event(event)

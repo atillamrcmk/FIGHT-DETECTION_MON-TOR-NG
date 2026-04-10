@@ -72,7 +72,8 @@ class Dashboard(tk.Tk):
         helpbox = ttk.Label(
             self,
             text=(
-                "Kontroller (analiz penceresi): Space=Duraklat, r=Başa sar, +/-=Zoom, WASD=Kaydır, 0=Sıfırla, q/ESC=Çık"
+                "Kontroller (analiz penceresi): Space=Duraklat, r=Başa sar, +/-=Zoom, WASD=Kaydır, 0=Sıfırla, q/ESC=Çık. "
+                "UYARI/ALARM: ham kare JPEG olarak data/snapshots altına kaydedilir; ikinci pencerede önizleme."
             ),
             padding=(pad, 0, pad, pad),
             foreground="#444",

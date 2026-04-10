@@ -19,6 +19,19 @@ class ClipConfig:
 
 
 @dataclass(frozen=True)
+class SnapshotConfig:
+    """UYARI/ALARM aninda videonun resize/overlay oncesi ham karesini JPEG olarak kaydeder."""
+
+    enabled: bool = True
+    snapshots_dir: str = "data/snapshots"
+    cooldown_seconds: float = 3.0
+    jpeg_quality: int = 92
+    show_preview_window: bool = True
+    preview_max_width: int = 1280
+    preview_window_name: str = "Uyari - orijinal kare"
+
+
+@dataclass(frozen=True)
 class VisualizationConfig:
     show: bool = True
     draw_boxes: bool = True
@@ -87,6 +100,7 @@ class AppConfig:
 
     thresholds: Thresholds = field(default_factory=Thresholds)
     clip: ClipConfig = field(default_factory=ClipConfig)
+    snapshot: SnapshotConfig = field(default_factory=SnapshotConfig)
     viz: VisualizationConfig = field(default_factory=VisualizationConfig)
     detector: DetectorConfig = field(default_factory=DetectorConfig)
     tracking: TrackingConfig = field(default_factory=TrackingConfig)
@@ -103,6 +117,9 @@ class AppConfig:
     # UI
     window_name: str = "Prison Video Analytics MVP"
     resize_to: Optional[Tuple[int, int]] = None  # (w,h) or None
+
+    # File source only: True = video bitince basa sar (pencere kapanmaz). False = son karede bekle (r/q).
+    loop_file_on_end: bool = True
 
     def validate(self) -> None:
         mode = self.mode.upper().strip()
