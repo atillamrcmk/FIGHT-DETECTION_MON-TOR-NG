@@ -1,0 +1,31 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyd
+.Python
+
+# Virtual environments
+.venv/
+venv/
+ENV/
+env/
+project/.venv/
+
+# Editor/OS
+.vscode/
+.idea/
+*.swp
+.DS_Store
+Thumbs.db
+
+# Logs & caches
+*.log
+.pytest_cache/
+.mypy_cache/
+
+# Local data artifacts (videos, logs, outputs)
+project/data/clips/
+project/data/output/
+project/data/logs/
+project/data/input/
+
