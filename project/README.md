@@ -32,6 +32,19 @@ python -m venv .venv
 pip install -r requirements.txt
 ```
 
+## (Opsiyonel) Fight modeli eğitimi (RWF2000 vb.)
+
+Bu repo iki katmanlı çalışır:
+- Heuristik/pipeline her zaman çalışır (pose + tracking + risk engine).
+- `FIGHT` modundaki **clip sınıflandırıcı** (MODEL(FIGHT)) yalnızca `models/fight_mobilenetv3_small.pth` mevcutsa aktiftir.
+
+Eğitim (örnek):
+
+```bash
+cd project
+python train_rwf2000.py --data_root "C:\\path\\to\\RWF2000" --out "models\\fight_mobilenetv3_small.pth" --epochs 3
+```
+
 ## Çalıştırma
 
 1) `project/data/input/` içine bir video koyun (örn: `sample.mp4`)

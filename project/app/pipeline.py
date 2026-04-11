@@ -22,7 +22,7 @@ from app.alerts.clip_recorder import ClipRecorder, ClipRecorderConfig
 from app.alerts.snapshot_saver import SnapshotSaver, SnapshotSaverConfig
 from app.utils.video_io import VideoSource
 from app.utils.logger import JsonEventLogger, now_iso
-from app.utils.drawing import color_for_id, draw_bbox, draw_side_panel, draw_skeleton, level_color
+from app.utils.drawing import color_for_id, draw_bbox, draw_hud_panel, draw_skeleton, level_color
 from app.models.fight_classifier import FightClipClassifier, FightModelConfig
 
 
@@ -469,7 +469,6 @@ class Pipeline:
                         lines = [
                             (f"MOD: {self.mode}", (220, 220, 220)),
                             (f"KİŞİ: {len(tracks)}", (220, 220, 220)),
-                            (f"RISK: {risk_score:5.1f}", (220, 220, 220)),
                             (f"DURUM: {level}", level_color(level)),
                             (f"NEDEN: {main_reason}", (200, 200, 200)),
                             (f"PAUSE: {'EVET' if self._paused else 'HAYIR'}", (170, 170, 170)),
@@ -481,7 +480,14 @@ class Pipeline:
                             # top few components
                             for k, v in sorted(components.items(), key=lambda kv: kv[1], reverse=True)[:6]:
                                 lines.append((f"{k}: {v:5.1f}", (170, 170, 170)))
-                        vis = draw_side_panel(vis, self.cfg.viz.panel_width, lines)
+                        vis = draw_hud_panel(
+                            vis,
+                            panel_width=self.cfg.viz.panel_width,
+                            title="Risk Paneli",
+                            lines=lines,
+                            risk_score=float(risk_score),
+                            level=str(level),
+                        )
 
                     cv2.imshow(self.cfg.window_name, vis)
                     wait_ms = 50 if self._paused else 1

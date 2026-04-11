@@ -151,12 +151,28 @@ def main() -> None:
     ap.add_argument("--clip_len", type=int, default=16)
     ap.add_argument("--size", type=int, default=224)
     ap.add_argument("--seed", type=int, default=42)
+    ap.add_argument(
+        "--max_per_class",
+        type=int,
+        default=0,
+        help="Optional cap for faster CPU training (e.g. 200). 0 disables.",
+    )
     args = ap.parse_args()
 
     set_seed(args.seed)
     items = list_videos_with_labels(args.data_root)
     if len(items) < 50:
         raise SystemExit(f"Not enough labeled videos found under {args.data_root}. Found: {len(items)}")
+
+    if int(args.max_per_class or 0) > 0:
+        maxn = int(args.max_per_class)
+        c0 = [it for it in items if int(it[1]) == 0]
+        c1 = [it for it in items if int(it[1]) == 1]
+        random.shuffle(c0)
+        random.shuffle(c1)
+        c0 = c0[:maxn]
+        c1 = c1[:maxn]
+        items = c0 + c1
 
     random.shuffle(items)
     n = len(items)

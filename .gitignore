@@ -29,4 +29,8 @@ project/data/output/
 project/data/logs/
 project/data/input/
 project/data/snapshots/
+project/data/ui_state.json
+
+# Trained model artifacts (keep local)
+project/models/*.pth
 

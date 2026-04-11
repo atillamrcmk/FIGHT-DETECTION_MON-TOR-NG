@@ -71,7 +71,7 @@ class FightClipClassifier:
             def __init__(self, bb: nn.Module, hd: nn.Module) -> None:
                 super().__init__()
                 self.bb = bb
-                self.hd = hd
+                self.head = hd
 
             def forward(self, x: torch.Tensor) -> torch.Tensor:
                 # x: (B,T,3,H,W)
@@ -79,7 +79,7 @@ class FightClipClassifier:
                 x = x.reshape(b * t, c, h, w)
                 f = self.bb(x)  # (B*T,feat)
                 f = f.reshape(b, t, -1).mean(dim=1)  # temporal average
-                return self.hd(f)  # (B,1)
+                return self.head(f)  # (B,1)
 
         return Model(backbone, head)
 

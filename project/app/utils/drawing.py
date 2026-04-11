@@ -87,6 +87,60 @@ def draw_side_panel(
     return np.hstack([frame, panel])
 
 
+def _alpha_blend(dst: np.ndarray, src: np.ndarray, alpha: float) -> np.ndarray:
+    alpha = float(max(0.0, min(1.0, alpha)))
+    return cv2.addWeighted(src, alpha, dst, 1.0 - alpha, 0.0)
+
+
+def draw_hud_panel(
+    frame: np.ndarray,
+    *,
+    panel_width: int,
+    title: str,
+    lines: List[Tuple[str, Tuple[int, int, int]]],
+    risk_score: float,
+    level: str,
+) -> np.ndarray:
+    """
+    Modern-ish HUD: translucent right panel + risk bar.
+    Returns new image (frame + panel).
+    """
+    h, w = frame.shape[:2]
+    pw = int(max(240, panel_width))
+
+    panel = np.full((h, pw, 3), (10, 16, 30), dtype=np.uint8)
+    panel2 = panel.copy()
+
+    # Top header
+    cv2.rectangle(panel2, (0, 0), (pw, 76), (15, 26, 48), -1)
+    cv2.putText(panel2, title, (16, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.72, (240, 245, 255), 2, cv2.LINE_AA)
+    cv2.putText(panel2, "Live risk view", (16, 56), cv2.FONT_HERSHEY_SIMPLEX, 0.50, (140, 160, 185), 1, cv2.LINE_AA)
+
+    # Risk bar
+    r = float(max(0.0, min(100.0, risk_score)))
+    bar_x1, bar_x2 = 16, pw - 16
+    bar_y1, bar_y2 = 94, 112
+    cv2.rectangle(panel2, (bar_x1, bar_y1), (bar_x2, bar_y2), (34, 48, 78), -1)
+    fill = int(round((bar_x2 - bar_x1) * (r / 100.0)))
+    color = level_color(level)
+    cv2.rectangle(panel2, (bar_x1, bar_y1), (bar_x1 + fill, bar_y2), color, -1)
+    cv2.putText(panel2, f"{r:0.1f}", (bar_x2 - 64, bar_y1 - 8), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (220, 230, 240), 1, cv2.LINE_AA)
+
+    # Divider
+    cv2.line(panel2, (16, 132), (pw - 16, 132), (30, 44, 70), 1, cv2.LINE_AA)
+
+    # Body lines
+    y = 162
+    for text, color in lines:
+        cv2.putText(panel2, text, (16, y), cv2.FONT_HERSHEY_SIMPLEX, 0.58, color, 1, cv2.LINE_AA)
+        y += 26
+        if y > h - 16:
+            break
+
+    panel = _alpha_blend(panel, panel2, 0.92)
+    return np.hstack([frame, panel])
+
+
 def level_color(level: str) -> Tuple[int, int, int]:
     level = (level or "").upper()
     if level == "ALARM":

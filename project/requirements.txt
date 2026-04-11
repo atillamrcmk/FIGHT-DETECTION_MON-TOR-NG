@@ -4,3 +4,7 @@ ultralytics>=8.2
 
 # Optional (can improve some analytics, but not required for MVP)
 scipy>=1.10
+
+# Optional (only needed if you want the fight clip classifier model enabled)
+torch
+torchvision
