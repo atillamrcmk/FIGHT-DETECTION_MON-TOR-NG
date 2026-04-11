@@ -76,8 +76,7 @@ class Pipeline:
                 "clustering": self.cfg.fight_weights.clustering,
                 "scene_motion": self.cfg.fight_weights.scene_motion,
                 "bonus_fast_close_and_agitated": self.cfg.fight_weights.bonus_fast_close_and_agitated,
-                # model weight (MVP default). TODO: expose in config.
-                "fight_model": 1.0,
+                "fight_model": self.cfg.fight_weights.fight_model,
             },
             warning_thr=self.cfg.thresholds.warning,
             alarm_thr=self.cfg.thresholds.alarm,
@@ -119,7 +118,7 @@ class Pipeline:
             )
 
         self._prev_gray: Optional[np.ndarray] = None
-        self._prev_centers_sorted: List[Tuple[float, float]] = []
+        self._prev_centers_by_id: Dict[int, Tuple[float, float]] = {}
         self._prev_kpts_by_id: Dict[int, Tuple[np.ndarray, np.ndarray]] = {}
 
         # fight model buffer (used in FIGHT mode only)
@@ -135,7 +134,7 @@ class Pipeline:
 
     def _reset_temporal_state_after_seek(self) -> None:
         self._prev_gray = None
-        self._prev_centers_sorted = []
+        self._prev_centers_by_id = {}
         self._prev_kpts_by_id = {}
 
     def _file_eof_overlay_loop(self, last_frame: np.ndarray, cap: cv2.VideoCapture) -> bool:
@@ -329,11 +328,10 @@ class Pipeline:
 
                     scene_motion = self._scene_motion_score(frame)
 
-                # global centers for interaction: keep stable ordering by x then y
-                    centers_now = [t.center for t in tracks]
-                    centers_now_sorted = sorted(centers_now, key=lambda p: (p[0], p[1]))
-                    inter = self.interaction.compute(centers_now_sorted, self._prev_centers_sorted)
-                    self._prev_centers_sorted = centers_now_sorted
+                    # interaction/clustering using track-id stability across frames
+                    centers_now_by_id = {t.track_id: t.center for t in tracks}
+                    inter = self.interaction.compute_tracked(centers_now_by_id, self._prev_centers_by_id)
+                    self._prev_centers_by_id = centers_now_by_id
 
                     # per-track compute, then aggregate to frame-level
                     movement_scores = []
@@ -380,14 +378,17 @@ class Pipeline:
                     still_seconds_max = float(max(still_seconds_list) if still_seconds_list else 0.0)
 
                     if self.mode == "FIGHT":
-                        bonus = (inter.interaction_score > 55.0) and (agitation_score > 60.0)
+                        # Bonus rule tuned for demo sensitivity (still heuristic)
+                        bonus = ((inter.interaction_score > 35.0) and (agitation_score > 55.0)) or (
+                            (movement_score > 70.0) and (agitation_score > 55.0)
+                        )
                         rr: FightRiskResult = self.fight_engine.compute(
                             movement_score=movement_score,
                             agitation_score=agitation_score,
                             interaction_score=inter.interaction_score,
                             clustering_score=inter.clustering_score,
                             scene_motion_score=scene_motion,
-                        fight_model_score=float(self._fight_model_score),
+                            fight_model_score=float(self._fight_model_score),
                             bonus_flag=bonus,
                             active_interactions=inter.active_interactions,
                         )
@@ -395,6 +396,39 @@ class Pipeline:
                         level = rr.level
                         main_reason = rr.main_reason
                         components = rr.components
+
+                        # Direct rule helpers for 1v1 fights:
+                        # - if model is confident, upgrade severity
+                        # - if enough independent "fight-ish" signals exist, at least warn even if score avg stays low
+                        if len(tracks) >= 2:
+                            if self._fight_model.enabled and self._fight_model_score >= self.cfg.fight_direct_alarm_model_thr:
+                                level = "ALARM"
+                                main_reason = "direct_model_alarm"
+                                risk_score = max(float(risk_score), float(self.fight_engine.alarm_thr))
+                                components["direct_model_alarm"] = float(self._fight_model_score)
+                            else:
+                                signals = 0
+                                if self._fight_model.enabled and self._fight_model_score >= self.cfg.fight_direct_warning_model_thr:
+                                    signals += 1
+                                if float(inter.interaction_score) >= float(self.cfg.fight_direct_warning_interaction_thr):
+                                    signals += 1
+                                if float(agitation_score) >= float(self.cfg.fight_direct_warning_agitation_thr):
+                                    signals += 1
+                                if float(movement_score) >= float(self.cfg.fight_direct_warning_movement_thr):
+                                    signals += 1
+                                if float(inter.clustering_score) >= float(self.cfg.fight_direct_warning_clustering_thr):
+                                    signals += 1
+
+                                if level != "ALARM" and signals >= int(self.cfg.fight_direct_min_signals_alarm):
+                                    level = "ALARM"
+                                    main_reason = "direct_multi_signal_alarm"
+                                    risk_score = max(float(risk_score), float(self.fight_engine.alarm_thr))
+                                    components["direct_multi_signal_alarm"] = float(signals)
+                                elif level == "NORMAL" and signals >= int(self.cfg.fight_direct_min_signals_warning):
+                                    level = "UYARI"
+                                    main_reason = "direct_multi_signal_warning"
+                                    risk_score = max(float(risk_score), float(self.fight_engine.warning_thr))
+                                    components["direct_multi_signal_warning"] = float(signals)
                     else:
                         mr: MonitoringRiskResult = self.monitor_engine.compute(
                             inactivity_score=inactivity_score,

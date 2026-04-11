@@ -77,6 +77,7 @@ class FightWeights:
     clustering: float = 0.8
     scene_motion: float = 0.6
     bonus_fast_close_and_agitated: float = 12.0
+    fight_model: float = 1.6
 
 
 @dataclass(frozen=True)
@@ -109,6 +110,16 @@ class AppConfig:
     monitoring_weights: MonitoringWeights = field(default_factory=MonitoringWeights)
 
     debug: bool = True
+
+    # FIGHT mode "direct rule" helpers (demo-friendly; still heuristic)
+    fight_direct_warning_model_thr: float = 55.0
+    fight_direct_alarm_model_thr: float = 75.0
+    fight_direct_warning_interaction_thr: float = 12.0
+    fight_direct_warning_agitation_thr: float = 35.0
+    fight_direct_warning_movement_thr: float = 55.0
+    fight_direct_warning_clustering_thr: float = 25.0
+    fight_direct_min_signals_warning: int = 2
+    fight_direct_min_signals_alarm: int = 3
 
     # Output paths (relative to project root)
     logs_dir: str = "data/logs"

@@ -54,7 +54,17 @@ class FightRiskEngine:
         else:
             components["bonus_fast_close_and_agitated"] = 0.0
 
-        score = clamp(score / 6.0, 0.0, 100.0)  # keep in 0-100 band (6 components)
+        # Normalize to 0-100 band using configured weights.
+        denom = 0.0
+        denom += float(self.w.get("movement", 1.0))
+        denom += float(self.w.get("agitation", 1.0))
+        denom += float(self.w.get("interaction", 1.0))
+        denom += float(self.w.get("clustering", 1.0))
+        denom += float(self.w.get("scene_motion", 1.0))
+        denom += float(self.w.get("fight_model", 1.0))
+        if denom <= 1e-9:
+            denom = 6.0
+        score = clamp(score / denom, 0.0, 100.0)
 
         if score >= self.alarm_thr:
             level = "ALARM"
