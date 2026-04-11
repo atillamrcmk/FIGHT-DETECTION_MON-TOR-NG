@@ -265,7 +265,8 @@ class Dashboard(tk.Tk):
         ttk.Label(
             right,
             text=(
-                "Space: Duraklat | r: Başa sar | +/-: Zoom | WASD: Kaydır | 0: Sıfırla | q/ESC: Çık\n"
+                "Mouse: Sol tık=Duraklat | Tekerlek=Zoom | Sağ tık sürükle=Kaydır | Seek bar (dosya)=ileri/geri\n"
+                "Klavye: Space=Duraklat | r=Başa sar | +/-=Zoom | WASD=Kaydır | 0=Sıfırla | q/ESC=Çık\n"
                 "UYARI/ALARM: ham kare data/snapshots altına kaydedilir (opsiyonel önizleme penceresi)"
             ),
             style="CardMuted.TLabel",

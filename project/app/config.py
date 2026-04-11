@@ -41,6 +41,12 @@ class VisualizationConfig:
     panel_width: int = 360
     max_skeleton_people: int = 20
 
+    # Auto resize processing frames to keep windows usable on large videos.
+    # This affects detection/tracking coordinates (processed at resized resolution).
+    auto_resize_enabled: bool = True
+    auto_resize_max_width: int = 1280
+    auto_resize_max_height: int = 720
+
 
 @dataclass(frozen=True)
 class DetectorConfig:

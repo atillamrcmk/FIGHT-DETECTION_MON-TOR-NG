@@ -132,10 +132,31 @@ class Pipeline:
         self._pan_x: int = 0
         self._pan_y: int = 0
 
+        # Mouse/seek state (file sources only)
+        self._pending_seek_frame: Optional[int] = None
+        self._trackbar_internal_set: bool = False
+        self._dragging_pan: bool = False
+        self._last_mouse_xy: Optional[Tuple[int, int]] = None
+        self._force_process_once: bool = False
+
+        # Auto-resize processing frames for usability
+        self._auto_resize_set: bool = False
+        self._resize_to: Optional[Tuple[int, int]] = self.cfg.resize_to
+
+        # Last computed frame-level state (so pause/seek UI doesn't zero-out)
+        self._last_risk_score: float = 0.0
+        self._last_level: str = "NORMAL"
+        self._last_main_reason: str = "n/a"
+        self._last_components: Dict[str, float] = {}
+        self._fight_model_score_valid: bool = False
+
     def _reset_temporal_state_after_seek(self) -> None:
         self._prev_gray = None
         self._prev_centers_by_id = {}
         self._prev_kpts_by_id = {}
+        self._clip_buf.clear()
+        self._fight_model_score = 0.0
+        self._fight_model_score_valid = False
 
     def _file_eof_overlay_loop(self, last_frame: np.ndarray, cap: cv2.VideoCapture) -> bool:
         """
@@ -264,6 +285,97 @@ class Pipeline:
 
         return False
 
+    def _setup_mouse_and_trackbar(self, *, cap: cv2.VideoCapture, source_type: str) -> None:
+        if not self.cfg.viz.show:
+            return
+
+        cv2.namedWindow(self.cfg.window_name, cv2.WINDOW_NORMAL)
+
+        def on_mouse(event: int, x: int, y: int, flags: int, _userdata: Any) -> None:
+            # Left click: pause/resume
+            if event == cv2.EVENT_LBUTTONDOWN:
+                self._paused = not self._paused
+                return
+
+            # Mouse wheel: zoom in/out
+            if event == cv2.EVENT_MOUSEWHEEL:
+                # flags sign indicates direction
+                delta = 1 if flags > 0 else -1
+                if delta > 0:
+                    self._zoom = min(4.0, self._zoom * 1.15)
+                else:
+                    self._zoom = max(1.0, self._zoom / 1.15)
+                    if self._zoom <= 1.001:
+                        self._zoom = 1.0
+                        self._pan_x = 0
+                        self._pan_y = 0
+                return
+
+            # Right-button drag: pan (only when zoomed)
+            if event == cv2.EVENT_RBUTTONDOWN:
+                self._dragging_pan = True
+                self._last_mouse_xy = (x, y)
+                return
+            if event == cv2.EVENT_RBUTTONUP:
+                self._dragging_pan = False
+                self._last_mouse_xy = None
+                return
+            if event == cv2.EVENT_MOUSEMOVE and self._dragging_pan and self._zoom > 1.001 and self._last_mouse_xy is not None:
+                lx, ly = self._last_mouse_xy
+                dx = x - lx
+                dy = y - ly
+                self._pan_x += int(dx)
+                self._pan_y += int(dy)
+                self._last_mouse_xy = (x, y)
+
+        try:
+            cv2.setMouseCallback(self.cfg.window_name, on_mouse)
+        except Exception:
+            pass
+
+        if source_type != "file":
+            return
+
+        try:
+            frame_count = int(cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0)
+        except Exception:
+            frame_count = 0
+        if frame_count <= 0:
+            return
+
+        def on_seek(pos: int) -> None:
+            if self._trackbar_internal_set:
+                return
+            self._pending_seek_frame = int(pos)
+
+        try:
+            cv2.createTrackbar("Seek", self.cfg.window_name, 0, max(1, frame_count - 1), on_seek)
+        except Exception:
+            pass
+
+    def _maybe_set_auto_resize(self, frame_bgr: np.ndarray) -> None:
+        if self._auto_resize_set:
+            return
+        self._auto_resize_set = True
+
+        if self._resize_to is not None:
+            return
+        if not self.cfg.viz.auto_resize_enabled:
+            return
+
+        h, w = frame_bgr.shape[:2]
+        mw = int(self.cfg.viz.auto_resize_max_width)
+        mh = int(self.cfg.viz.auto_resize_max_height)
+        if mw <= 0 or mh <= 0:
+            return
+        if w <= mw and h <= mh:
+            return
+
+        scale = min(mw / float(w), mh / float(h), 1.0)
+        new_w = max(320, int(round(w * scale)))
+        new_h = max(240, int(round(h * scale)))
+        self._resize_to = (new_w, new_h)
+
     def run(self) -> None:
         os.makedirs(self.cfg.logs_dir, exist_ok=True)
         os.makedirs(self.cfg.clips_dir, exist_ok=True)
@@ -284,8 +396,22 @@ class Pipeline:
             frame_idx = 0
             last_frame: Optional[np.ndarray] = None
             source_type = (self.cfg.VIDEO_SOURCE.get("type") or "").lower().strip()
+            self._setup_mouse_and_trackbar(cap=cap, source_type=source_type)
 
             while True:
+                # apply pending seek (file only)
+                if self._pending_seek_frame is not None and source_type == "file":
+                    try:
+                        cap.set(cv2.CAP_PROP_POS_FRAMES, float(self._pending_seek_frame))
+                    except Exception:
+                        pass
+                    frame_idx = int(self._pending_seek_frame)
+                    last_frame = None
+                    self._pending_seek_frame = None
+                    self._reset_temporal_state_after_seek()
+                    # If user is paused and scrubbing, still compute metrics for the new frame once.
+                    self._force_process_once = True
+
                 snapshot_native: Optional[np.ndarray] = None
                 if not self._paused or last_frame is None:
                     ok, frame = cap.read()
@@ -311,17 +437,28 @@ class Pipeline:
                 else:
                     frame = last_frame
 
-                if self.cfg.resize_to is not None and (not self._paused):
-                    frame = cv2.resize(frame, self.cfg.resize_to)
-                    last_frame = frame
+                process = (not self._paused) or self._force_process_once
 
-                if not self._paused:
-                    self.clip.push_frame(frame, fps=fps)
+                # Auto resize (applies to processing, not just display) to keep windows usable.
+                if process:
+                    self._maybe_set_auto_resize(frame)
+                    if self._resize_to is not None:
+                        frame = cv2.resize(frame, self._resize_to)
+                        last_frame = frame
+
+                if process:
+                    # Only push frames to clip recorder when playing (avoid side-effects while scrubbing)
+                    if not self._paused:
+                        self.clip.push_frame(frame, fps=fps)
+
                     if self.mode == "FIGHT":
+                        # Keep model buffer moving for live playback. While paused+scrubbing we still append,
+                        # but the score will only become valid after enough consecutive frames.
                         self._clip_buf.append(frame)
                         s = self._fight_model.predict_score_if_ready(self._clip_buf)
                         if s is not None:
                             self._fight_model_score = float(s)
+                            self._fight_model_score_valid = True
 
                     dets = self.pose.detect(frame)
                     tracks = self.tracker.update(self._detections_from_pose(dets))
@@ -397,9 +534,7 @@ class Pipeline:
                         main_reason = rr.main_reason
                         components = rr.components
 
-                        # Direct rule helpers for 1v1 fights:
-                        # - if model is confident, upgrade severity
-                        # - if enough independent "fight-ish" signals exist, at least warn even if score avg stays low
+                        # Direct rule helpers for 1v1 fights
                         if len(tracks) >= 2:
                             if self._fight_model.enabled and self._fight_model_score >= self.cfg.fight_direct_alarm_model_thr:
                                 level = "ALARM"
@@ -442,15 +577,22 @@ class Pipeline:
                         level = mr.level
                         main_reason = mr.main_reason
                         components = mr.components
+
+                    # Cache last computed state for pause/scrub UI
+                    self._last_risk_score = float(risk_score)
+                    self._last_level = str(level)
+                    self._last_main_reason = str(main_reason)
+                    self._last_components = {str(k): float(v) for k, v in (components or {}).items()}
+
+                    self._force_process_once = False
                 else:
-                    # paused: keep last computed values (or show neutral)
+                    # paused: keep last computed values (do not zero-out)
                     tracks = list(self.tracker.tracks.values())
                     scene_motion = 0.0
-                    inter = self.interaction.compute([], [])
-                    risk_score = 0.0
-                    level = "NORMAL"
-                    main_reason = "paused"
-                    components = {}
+                    risk_score = float(self._last_risk_score)
+                    level = str(self._last_level)
+                    main_reason = str(self._last_main_reason)
+                    components = dict(self._last_components)
 
                 clip_path = None
                 if (not self._paused) and level == "ALARM" and self.clip.can_trigger():
@@ -509,7 +651,10 @@ class Pipeline:
                             (f"ZOOM: {self._zoom:0.2f}x", (170, 170, 170)),
                         ]
                         if self.mode == "FIGHT":
-                            lines.append((f"MODEL(FIGHT): {self._fight_model_score:5.1f}", (170, 170, 170)))
+                            if self._fight_model.enabled and self._fight_model_score_valid:
+                                lines.append((f"MODEL(FIGHT): {self._fight_model_score:5.1f}", (170, 170, 170)))
+                            elif self._fight_model.enabled:
+                                lines.append(("MODEL(FIGHT): ...", (170, 170, 170)))
                         if self.cfg.debug:
                             # top few components
                             for k, v in sorted(components.items(), key=lambda kv: kv[1], reverse=True)[:6]:
@@ -524,6 +669,16 @@ class Pipeline:
                         )
 
                     cv2.imshow(self.cfg.window_name, vis)
+
+                    # Update seek trackbar with current position (file sources)
+                    if source_type == "file":
+                        try:
+                            self._trackbar_internal_set = True
+                            cv2.setTrackbarPos("Seek", self.cfg.window_name, max(0, int(frame_idx)))
+                        except Exception:
+                            pass
+                        finally:
+                            self._trackbar_internal_set = False
                     wait_ms = 50 if self._paused else 1
                     key = cv2.waitKey(wait_ms) & 0xFF
                     if key != 255:

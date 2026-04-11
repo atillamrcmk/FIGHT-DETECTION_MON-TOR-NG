@@ -129,13 +129,21 @@ def draw_hud_panel(
     # Divider
     cv2.line(panel2, (16, 132), (pw - 16, 132), (30, 44, 70), 1, cv2.LINE_AA)
 
-    # Body lines
-    y = 162
-    for text, color in lines:
+    # Body lines (adaptive spacing if window is short)
+    y0 = 162
+    available = max(0, (h - 16) - y0)
+    # Prefer 26px, fall back to 22/20px on short windows
+    step = 26
+    if available < 26 * 10:
+        step = 22
+    if available < 22 * 9:
+        step = 20
+    max_lines = max(1, int(available // max(1, step)))
+
+    y = y0
+    for text, color in lines[:max_lines]:
         cv2.putText(panel2, text, (16, y), cv2.FONT_HERSHEY_SIMPLEX, 0.58, color, 1, cv2.LINE_AA)
-        y += 26
-        if y > h - 16:
-            break
+        y += step
 
     panel = _alpha_blend(panel, panel2, 0.92)
     return np.hstack([frame, panel])
