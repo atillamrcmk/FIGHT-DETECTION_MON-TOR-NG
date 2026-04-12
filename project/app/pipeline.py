@@ -16,6 +16,7 @@ from app.analytics.interaction_analyzer import InteractionAnalyzer
 from app.analytics.inactivity_analyzer import InactivityAnalyzer
 from app.analytics.posture_analyzer import PostureAnalyzer
 from app.analytics.aggression_analyzer import AggressionAnalyzer
+from app.analytics.fire_analyzer import FireAnalyzer
 from app.risk.fight_risk_engine import FightRiskEngine, FightRiskResult
 from app.risk.monitoring_risk_engine import MonitoringRiskEngine, MonitoringRiskResult
 from app.alerts.clip_recorder import ClipRecorder, ClipRecorderConfig
@@ -67,6 +68,7 @@ class Pipeline:
         self.inactivity = InactivityAnalyzer(inactivity_seconds=self.cfg.features.inactivity_seconds)
         self.posture = PostureAnalyzer(collapse_angle_threshold=self.cfg.features.collapse_angle_threshold)
         self.aggression = AggressionAnalyzer(self_harm_head_radius_px=self.cfg.features.self_harm_head_radius_px)
+        self.fire = FireAnalyzer(self.cfg.fire)
 
         self.fight_engine = FightRiskEngine(
             weights={
@@ -157,6 +159,7 @@ class Pipeline:
         self._clip_buf.clear()
         self._fight_model_score = 0.0
         self._fight_model_score_valid = False
+        self.fire.reset()
 
     def _file_eof_overlay_loop(self, last_frame: np.ndarray, cap: cv2.VideoCapture) -> bool:
         """
@@ -464,6 +467,9 @@ class Pipeline:
                     tracks = self.tracker.update(self._detections_from_pose(dets))
 
                     scene_motion = self._scene_motion_score(frame)
+                    fire_score = 0.0
+                    if self.cfg.fire.enabled:
+                        fire_score = float(self.fire.compute(frame).score)
 
                     # interaction/clustering using track-id stability across frames
                     centers_now_by_id = {t.track_id: t.center for t in tracks}
@@ -578,6 +584,20 @@ class Pipeline:
                         main_reason = mr.main_reason
                         components = mr.components
 
+                    # Fire override (works in both modes)
+                    if self.cfg.fire.enabled:
+                        components = dict(components or {})
+                        components["fire_score"] = float(fire_score)
+                        if fire_score >= float(self.cfg.fire.alarm_thr):
+                            if bool(self.cfg.fire.direct_alarm):
+                                level = "ALARM"
+                            risk_score = max(float(risk_score), float(self.cfg.thresholds.alarm))
+                            main_reason = "fire"
+                        elif fire_score >= float(self.cfg.fire.warning_thr) and str(level) == "NORMAL":
+                            level = "UYARI"
+                            risk_score = max(float(risk_score), float(self.cfg.thresholds.warning))
+                            main_reason = "fire_warning"
+
                     # Cache last computed state for pause/scrub UI
                     self._last_risk_score = float(risk_score)
                     self._last_level = str(level)
@@ -645,11 +665,15 @@ class Pipeline:
                         lines = [
                             (f"MOD: {self.mode}", (220, 220, 220)),
                             (f"KISI: {len(tracks)}", (220, 220, 220)),
+                            (f"YANGIN: {float(components.get('fire_score', 0.0)):0.1f}", (220, 220, 220))
+                            if self.cfg.fire.enabled
+                            else None,
                             (f"DURUM: {level}", level_color(level)),
                             (f"NEDEN: {main_reason}", (200, 200, 200)),
                             (f"PAUSE: {'EVET' if self._paused else 'HAYIR'}", (170, 170, 170)),
                             (f"ZOOM: {self._zoom:0.2f}x", (170, 170, 170)),
                         ]
+                        lines = [x for x in lines if x is not None]
                         if self.mode == "FIGHT":
                             if self._fight_model.enabled and self._fight_model_score_valid:
                                 lines.append((f"MODEL(FIGHT): {self._fight_model_score:5.1f}", (170, 170, 170)))

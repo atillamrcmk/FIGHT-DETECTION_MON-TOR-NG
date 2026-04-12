@@ -7,7 +7,7 @@ import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
 from typing import Dict, Optional, Tuple
 
-from app.config import AppConfig
+from app.config import AppConfig, FireConfig
 from app.pipeline import Pipeline
 
 
@@ -149,6 +149,7 @@ class Dashboard(tk.Tk):
         self.file_path_var = tk.StringVar(value="")
         self.webcam_index_var = tk.StringVar(value="0")
         self.rtsp_url_var = tk.StringVar(value="rtsp://")
+        self.fire_var = tk.BooleanVar(value=False)
 
         self.status_var = tk.StringVar(value="Hazır. Bir kaynak seçip analizi başlat.")
         self.hint_var = tk.StringVar(value="")
@@ -196,6 +197,9 @@ class Dashboard(tk.Tk):
             width=18,
             style="Dark.TCombobox",
         ).grid(row=row, column=0, sticky="ew", pady=(4, 12))
+        row += 1
+
+        ttk.Checkbutton(left, text="YANGIN UYARI (beta)", variable=self.fire_var).grid(row=row, column=0, sticky="w", pady=(0, 12))
         row += 1
 
         ttk.Label(left, text="Kaynak", style="CardMuted.TLabel").grid(row=row, column=0, sticky="w")
@@ -330,6 +334,7 @@ class Dashboard(tk.Tk):
             self.file_path_var.set(str(st.get("file_path") or "").strip())
             self.webcam_index_var.set(str(st.get("webcam_index") or "0").strip())
             self.rtsp_url_var.set(str(st.get("rtsp_url") or "rtsp://").strip())
+            self.fire_var.set(bool(st.get("fire_enabled", False)))
         except Exception:
             # ignore corrupted state file
             pass
@@ -343,6 +348,7 @@ class Dashboard(tk.Tk):
                 "file_path": self.file_path_var.get().strip(),
                 "webcam_index": self.webcam_index_var.get().strip(),
                 "rtsp_url": self.rtsp_url_var.get().strip(),
+                "fire_enabled": bool(self.fire_var.get()),
                 "last_source_cfg": source_cfg,
             }
             with open(self._state_path, "w", encoding="utf-8") as f:
@@ -364,6 +370,7 @@ class Dashboard(tk.Tk):
         # AppConfig is frozen; set via constructor / object.__setattr__
         cfg = AppConfig(mode=self.mode_var.get().strip().upper())
         object.__setattr__(cfg, "VIDEO_SOURCE", source_cfg)
+        object.__setattr__(cfg, "fire", FireConfig(enabled=bool(self.fire_var.get())))
 
         self._last_source_cfg = source_cfg
         self._save_state(source_cfg)

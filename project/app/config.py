@@ -96,6 +96,31 @@ class MonitoringWeights:
 
 
 @dataclass(frozen=True)
+class FireConfig:
+    """
+    Lightweight (heuristic) fire/flame signal.
+    Notes:
+    - This is NOT a trained model; it relies on color + temporal flicker.
+    - Enable from UI (dashboard) or set enabled=True here.
+    """
+
+    enabled: bool = False
+    warning_thr: float = 40.0
+    alarm_thr: float = 70.0
+    direct_alarm: bool = True  # if True, fire alarm overrides other risks
+
+    # Color thresholds in HSV (OpenCV ranges: H 0..179, S 0..255, V 0..255)
+    hue_max: int = 45  # 0..45 ~ red/orange/yellow
+    s_min: int = 120
+    v_min: int = 160
+
+    # Scoring helpers
+    min_area_ratio: float = 0.010  # minimum "fire-like" pixel ratio to reach ~100
+    flicker_ref: float = 0.003  # expected mask change ratio between frames
+    downscale_width: int = 320  # speed-up (0/None disables)
+
+
+@dataclass(frozen=True)
 class AppConfig:
     # MODE: "FIGHT" or "MONITORING"
     mode: str = "FIGHT"
@@ -114,6 +139,7 @@ class AppConfig:
     features: FeatureConfig = field(default_factory=FeatureConfig)
     fight_weights: FightWeights = field(default_factory=FightWeights)
     monitoring_weights: MonitoringWeights = field(default_factory=MonitoringWeights)
+    fire: FireConfig = field(default_factory=FireConfig)
 
     debug: bool = True
 
