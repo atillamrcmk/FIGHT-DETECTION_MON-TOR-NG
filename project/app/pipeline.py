@@ -644,7 +644,7 @@ class Pipeline:
                     if self.cfg.viz.draw_panel:
                         lines = [
                             (f"MOD: {self.mode}", (220, 220, 220)),
-                            (f"KİŞİ: {len(tracks)}", (220, 220, 220)),
+                            (f"KISI: {len(tracks)}", (220, 220, 220)),
                             (f"DURUM: {level}", level_color(level)),
                             (f"NEDEN: {main_reason}", (200, 200, 200)),
                             (f"PAUSE: {'EVET' if self._paused else 'HAYIR'}", (170, 170, 170)),
