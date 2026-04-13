@@ -144,6 +144,7 @@ class Pipeline:
         # Auto-resize processing frames for usability
         self._auto_resize_set: bool = False
         self._resize_to: Optional[Tuple[int, int]] = self.cfg.resize_to
+        self._window_size_set: bool = False
 
         # Last computed frame-level state (so pause/seek UI doesn't zero-out)
         self._last_risk_score: float = 0.0
@@ -151,6 +152,38 @@ class Pipeline:
         self._last_main_reason: str = "n/a"
         self._last_components: Dict[str, float] = {}
         self._fight_model_score_valid: bool = False
+        self._last_active_interactions: int = 0
+
+    def _resize_letterbox(self, frame_bgr: np.ndarray, size_wh: Tuple[int, int]) -> np.ndarray:
+        """
+        Resize to a fixed (w,h) while preserving aspect ratio via padding (letterbox).
+        Keeps UI stable across different input video sizes/aspect ratios.
+        """
+        tw, th = [int(x) for x in size_wh]
+        if tw <= 0 or th <= 0:
+            return frame_bgr
+
+        h, w = frame_bgr.shape[:2]
+        if h <= 0 or w <= 0:
+            return frame_bgr
+
+        if w == tw and h == th:
+            return frame_bgr
+
+        scale = min(tw / float(w), th / float(h))
+        new_w = max(1, int(round(w * scale)))
+        new_h = max(1, int(round(h * scale)))
+        new_w = min(tw, new_w)
+        new_h = min(th, new_h)
+        resized = cv2.resize(frame_bgr, (new_w, new_h), interpolation=cv2.INTER_LINEAR)
+
+        pad_x = tw - new_w
+        pad_y = th - new_h
+        left = pad_x // 2
+        right = pad_x - left
+        top = pad_y // 2
+        bottom = pad_y - top
+        return cv2.copyMakeBorder(resized, top, bottom, left, right, cv2.BORDER_CONSTANT, value=(0, 0, 0))
 
     def _reset_temporal_state_after_seek(self) -> None:
         self._prev_gray = None
@@ -292,6 +325,7 @@ class Pipeline:
         if not self.cfg.viz.show:
             return
 
+        # Display size is stabilized via AppConfig.resize_to (letterbox). Keep the window resizable.
         cv2.namedWindow(self.cfg.window_name, cv2.WINDOW_NORMAL)
 
         def on_mouse(event: int, x: int, y: int, flags: int, _userdata: Any) -> None:
@@ -446,7 +480,7 @@ class Pipeline:
                 if process:
                     self._maybe_set_auto_resize(frame)
                     if self._resize_to is not None:
-                        frame = cv2.resize(frame, self._resize_to)
+                        frame = self._resize_letterbox(frame, self._resize_to)
                         last_frame = frame
 
                 if process:
@@ -475,6 +509,8 @@ class Pipeline:
                     centers_now_by_id = {t.track_id: t.center for t in tracks}
                     inter = self.interaction.compute_tracked(centers_now_by_id, self._prev_centers_by_id)
                     self._prev_centers_by_id = centers_now_by_id
+                    self._last_active_interactions = int(inter.active_interactions)
+                    active_interactions = int(inter.active_interactions)
 
                     # per-track compute, then aggregate to frame-level
                     movement_scores = []
@@ -602,6 +638,8 @@ class Pipeline:
                     self._last_risk_score = float(risk_score)
                     self._last_level = str(level)
                     self._last_main_reason = str(main_reason)
+                    components = dict(components or {})
+                    components["still_seconds_max"] = float(still_seconds_max)
                     self._last_components = {str(k): float(v) for k, v in (components or {}).items()}
 
                     self._force_process_once = False
@@ -613,6 +651,7 @@ class Pipeline:
                     level = str(self._last_level)
                     main_reason = str(self._last_main_reason)
                     components = dict(self._last_components)
+                    active_interactions = int(self._last_active_interactions)
 
                 clip_path = None
                 if (not self._paused) and level == "ALARM" and self.clip.can_trigger():
@@ -662,27 +701,62 @@ class Pipeline:
                             draw_skeleton(vis, t.keypoints_xy, t.keypoints_conf, c)
 
                     if self.cfg.viz.draw_panel:
+                        if "still_seconds_max" not in components:
+                            components["still_seconds_max"] = 0.0
+
+                        fire_text = (
+                            f"YANGIN: {float(components.get('fire_score', 0.0)):0.1f}"
+                            if self.cfg.fire.enabled
+                            else "YANGIN: KAPALI"
+                        )
+                        if self.mode == "FIGHT":
+                            if not self._fight_model.enabled:
+                                model_text = "MODEL(FIGHT): KAPALI"
+                            elif self._fight_model_score_valid:
+                                model_text = f"MODEL(FIGHT): {self._fight_model_score:5.1f}"
+                            else:
+                                model_text = "MODEL(FIGHT): ..."
+                        else:
+                            model_text = "MODEL(FIGHT): -"
+
                         lines = [
                             (f"MOD: {self.mode}", (220, 220, 220)),
                             (f"KISI: {len(tracks)}", (220, 220, 220)),
-                            (f"YANGIN: {float(components.get('fire_score', 0.0)):0.1f}", (220, 220, 220))
-                            if self.cfg.fire.enabled
-                            else None,
                             (f"DURUM: {level}", level_color(level)),
                             (f"NEDEN: {main_reason}", (200, 200, 200)),
+                            (fire_text, (220, 220, 220)),
+                            (model_text, (170, 170, 170)),
+                            (f"ETKILESIM: {int(active_interactions)}", (170, 170, 170)),
+                            (f"HAREKETSIZ(sn): {float(components.get('still_seconds_max', 0.0)):0.1f}", (170, 170, 170)),
                             (f"PAUSE: {'EVET' if self._paused else 'HAYIR'}", (170, 170, 170)),
                             (f"ZOOM: {self._zoom:0.2f}x", (170, 170, 170)),
                         ]
-                        lines = [x for x in lines if x is not None]
+
+                        # Stable component list (no "top N" variability)
                         if self.mode == "FIGHT":
-                            if self._fight_model.enabled and self._fight_model_score_valid:
-                                lines.append((f"MODEL(FIGHT): {self._fight_model_score:5.1f}", (170, 170, 170)))
-                            elif self._fight_model.enabled:
-                                lines.append(("MODEL(FIGHT): ...", (170, 170, 170)))
-                        if self.cfg.debug:
-                            # top few components
-                            for k, v in sorted(components.items(), key=lambda kv: kv[1], reverse=True)[:6]:
-                                lines.append((f"{k}: {v:5.1f}", (170, 170, 170)))
+                            stable_keys = [
+                                ("MOVE", "movement_score"),
+                                ("AGIT", "pose_agitation_score"),
+                                ("INT", "interaction_score"),
+                                ("CLUST", "clustering_score"),
+                                ("SCENE", "scene_motion_score"),
+                                ("MODEL_S", "fight_model_score"),
+                                ("BONUS", "bonus_fast_close_and_agitated"),
+                                ("DIR_M", "direct_model_alarm"),
+                                ("DIR_A", "direct_multi_signal_alarm"),
+                                ("DIR_W", "direct_multi_signal_warning"),
+                            ]
+                        else:
+                            stable_keys = [
+                                ("INACT", "inactivity_score"),
+                                ("AGIT", "agitation_score"),
+                                ("POST", "posture_score"),
+                                ("SELF", "self_harm_risk_score"),
+                                ("COLL", "collapse_score"),
+                            ]
+                        for label, key in stable_keys:
+                            lines.append((f"{label}: {float(components.get(key, 0.0)):5.1f}", (170, 170, 170)))
+
                         vis = draw_hud_panel(
                             vis,
                             panel_width=self.cfg.viz.panel_width,
@@ -691,6 +765,13 @@ class Pipeline:
                             risk_score=float(risk_score),
                             level=str(level),
                         )
+
+                    if not self._window_size_set:
+                        try:
+                            cv2.resizeWindow(self.cfg.window_name, int(vis.shape[1]), int(vis.shape[0]))
+                        except Exception:
+                            pass
+                        self._window_size_set = True
 
                     cv2.imshow(self.cfg.window_name, vis)
 
